@@ -1,6 +1,4 @@
-import math
 from typing import List
-
 import numpy as np
 import cv2
 from numpy.linalg import LinAlgError
@@ -53,7 +51,7 @@ def opticalFlow(im1: np.ndarray, im2: np.ndarray, step_size=10, win_size=5) -> (
     Z = im2 - im1
 
     UV, JI = [], []
-    k = 0
+    t = 0
     for i in range(step_size, im1.shape[0], step_size):
         for j in range(step_size, im1.shape[1], step_size):
 
@@ -67,11 +65,11 @@ def opticalFlow(im1: np.ndarray, im2: np.ndarray, step_size=10, win_size=5) -> (
             LEN_NX = len(NX)
             LEN_NY = len(NY)
 
-            A = np.array([[sum(NX[k] ** 2 for k in range(LEN_NX)), sum(NY[k] * NX[k] for k in range(LEN_NX))],
-                          [sum(NX[k] * NY[k] for k in range(LEN_NX)), sum(NY[k] ** 2 for k in range(LEN_NY))]])
+            A = np.array([[sum(NX[t] ** 2 for t in range(LEN_NX)), sum(NY[t] * NX[t] for t in range(LEN_NX))],
+                          [sum(NX[t] * NY[t] for t in range(LEN_NX)), sum(NY[t] ** 2 for t in range(LEN_NY))]])
 
-            B = np.array([[-1 * sum(NX[k] * NZ[k] for k in range(LEN_NX)),
-                           -1 * sum(NY[k] * NZ[k] for k in range(LEN_NY))]]).reshape(2, 1)
+            B = np.array([[-1 * sum(NX[t] * NZ[t] for t in range(LEN_NX)),
+                           -1 * sum(NY[t] * NZ[t] for t in range(LEN_NY))]]).reshape(2, 1)
 
             ev1, ev2 = np.linalg.eigvals(A)
             if ev2 < ev1:
@@ -79,11 +77,10 @@ def opticalFlow(im1: np.ndarray, im2: np.ndarray, step_size=10, win_size=5) -> (
 
             if ev2 >= ev1 > 1 and ev2 / ev1 < STEPS:
                 velo = np.dot(np.linalg.pinv(A), B)
-                v = velo[1][0]
-                u = velo[0][0]
+                u, v = velo[0][0], velo[1][0]
                 UV.append(np.array([u, v]))
             else:
-                k += 1
+                t += 1
                 UV.append(np.array([0.0, 0.0]))
 
             JI.append(np.array([j, i]))
@@ -117,7 +114,7 @@ def opticalFlowPyrLK(img1: np.ndarray, img2: np.ndarray, k: int, stepSize: int, 
         pyr_1, pyr_2 = p_d[level]
         dx_median, dy_median = np.ma.median(np.ma.masked_where(UVS == np.zeros((2)), UVS), axis=(0, 1)).filled(0)
         pyr_1 = cv2.warpPerspective(pyr_1, get_base_kernel(x=dx_median, y=dy_median), pyr_1.shape[::-1])
-        PTs, uv = opticalFlow(pyr_1, pyr_2, max(int(stepSize * math.pow(2, -level)), 1), winSize)
+        PTs, uv = opticalFlow(pyr_1, pyr_2, max(int(stepSize * (2 ** -level)), 1), winSize)
         if PTs.size == 0:
             continue
         converted_points = np.power(2, level) * PTs
@@ -140,28 +137,24 @@ def findTranslationLK(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
     diff = np.inf
     spot = 0
     old, new = opticalFlow(im1, im2, 10, 5)
+
     # look at all the u,v we found
-    for x in range(len(new)):
-        t1 = new[x][0]
-        t2 = new[x][1]
+    for k in range(len(new)):
+        t1, t2 = new[k][0], new[k][1]
         t = get_base_kernel(x=t1, y=t2)
-        # create a new image a transformation using u,v
-        newimg = cv2.warpPerspective(im1, t, (im1.shape[1], im1.shape[0]))
-        # find difference in image and keep track of the x,y that gives the smallest diff
-        d = ((im2 - newimg) ** 2).sum()
+
+        # create a new image
+        new_img = cv2.warpPerspective(im1, t, (im1.shape[1], im1.shape[0]))
+
+        # find the smallest diff
+        d = ((im2 - new_img) ** 2).sum()
 
         if d < diff:
-            diff = d
-            spot = x
+            diff, spot = d, k
             if diff == 0:
-                print("break")
                 break
-    t1 = new[spot][0]
-    t2 = new[spot][1]
-
-    t = get_base_kernel(x=t1, y=t2)
-
-    return t
+    t1, t2 = new[spot][0], new[spot][1]
+    return get_base_kernel(x=t1, y=t2)
 
 
 def findRigidLK(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
@@ -173,20 +166,16 @@ def findRigidLK(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
     t = 0
     min_mse = MIN_MSE
     for t in range(FULL_DEGREES):
-        tmp_t = np.array([[math.cos(t), -math.sin(t), 0], [math.sin(t), math.cos(t), 0], [0, 0, 1]], dtype=np.float64)
+        tmp_t = np.array([[np.cos(t), -np.sin(t), 0], [np.sin(t), np.cos(t), 0], [0, 0, 1]], dtype=np.float64)
         img_by_t = cv2.warpPerspective(im1, tmp_t, im1.shape[::-1])
         mse = np.square(np.subtract(im2, img_by_t)).mean()
         if mse < min_mse:
             min_mse = mse
-            tran_mat = tmp_t
-            t = t
-    rigid_mat = np.array([[math.cos(t), math.sin(t), 0], [-math.sin(t), math.cos(t), 0], [0, 0, 1]], dtype=np.float64)
-    revers_img = cv2.warpPerspective(im2, rigid_mat, im2.shape[::-1])
-    tran_mat = findTranslationLK(im1, revers_img)
-    ty = tran_mat[1, 2]
-    tx = tran_mat[0, 2]
-    ans = np.array([[math.cos(t), -math.sin(t), tx], [math.sin(t), math.cos(t), ty], [0, 0, 1]], dtype=np.float64)
-
+            M = tmp_t
+    rigid_mat = np.array([[np.cos(t), np.sin(t), 0], [-np.sin(t), np.cos(t), 0], [0, 0, 1]], dtype=np.float64)
+    M = findTranslationLK(im1, cv2.warpPerspective(im2, rigid_mat, im2.shape[::-1]))
+    ans = np.array(
+        [[np.cos(t), -np.sin(t), M[0, 2],], [np.sin(t), np.cos(t), M[1, 2]], [0, 0, 1]], dtype=np.float64)
     return ans
 
 
@@ -202,19 +191,17 @@ def findTranslationCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
 
     # getting 4 x and y points to be the middle of the window
     # the points are 1/5, 2/5 ... of the length and height
-    I = []
-    J = []
+    I, J = [], []
     for x in range(1, 5):
-        I.append((im1.shape[0] // 5) * x)
-        J.append((im1.shape[1] // 5) * x)
+        I.append(x * (im1.shape[0] // 5))
+        J.append(x * (im1.shape[1] // 5))
 
-    corr_listt = [(np.array([0]), 0, 0)]
+    list_t = [(np.array([0]), 0, 0)]
     for x in range(len(I)):
         for y in range(len(J)):
-            # getting a template to match
-            windowa = im1[I[x] - pad:I[x] + pad + 1, J[y] - pad:J[y] + pad + 1]
-            a = windowa.reshape(1, win * win)
-            aT = a.T
+            window_a = im1[I[x] - pad:I[x] + pad + 1, J[y] - pad:J[y] + pad + 1]
+            a = window_a.reshape(1, win * win)
+            a_transpose = a.T
             big = [(np.array([0]), 0, 0)]
             # going through the other pic to match the template
             for i in range(0, im2.shape[0]):
@@ -222,12 +209,9 @@ def findTranslationCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
                     if (i + pad + win) < im2pad.shape[0] and (j + pad + win) < im2pad.shape[1]:
                         windowb = im2pad[i + pad:i + pad + win, j + pad:j + pad + win]
                         b = windowb.reshape(1, win * win)
-                        bT = b.T
-                        top = np.dot(a, bT)
-                        bottom = np.dot(a, aT) + np.dot(b, bT)
-                        # finding the correlation between the template and this window
-                        # if it is bigger than the first value in list big clear big and put it in with the x y values of im2
-                        # if it is equal to the first value add it to the list and put it in with the x y values of im2
+                        b_transpose = b.T
+                        top = np.dot(a, b_transpose)
+                        bottom = np.dot(a, a_transpose) + np.dot(b, b_transpose)
                         if bottom != 0:
                             corr = top / bottom
                             if corr > big[0][0]:
@@ -235,39 +219,28 @@ def findTranslationCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
                                 big.insert(0, (corr, i, j))
                             elif corr == big[0][0]:
                                 big.insert(0, (corr, i, j))
-            # after checking this template check if the first value in big is bigger than the first value in corr_lisst
-            # if so clear corr_listt and copy the values from big to corr_listt and add the x y vaues of the original image
-            # if it equals copy the values from big to corr_listt and add the x y vaues of the original image
-            if big[0][0][0] > corr_listt[0][0][0]:
-                corr_listt.clear()
-                for m in range(len(big)):
-                    corr_listt.append((big[m], (I[x], J[y])))
-            if big[0][0][0] == corr_listt[0][0][0]:
-                for m in range(len(big)):
-                    corr_listt.append((big[m], (I[x], J[y])))
+            if big[0][0][0] > list_t[0][0][0]:
+                list_t.clear()
+                for k in range(len(big)):
+                    list_t.append((big[k], (I[x], J[y])))
+            if big[0][0][0] == list_t[0][0][0]:
+                for k in range(len(big)):
+                    list_t.append((big[k], (I[x], J[y])))
 
-    dif = float("inf")
+    dif = np.inf
     spot = -1
-    # go through all values in the cor list and find the u v by finding the difference between im1 xy and im2 xy
-    for x in range(len(corr_listt)):
-
-        t1 = corr_listt[x][1][0] - corr_listt[x][0][1]  # u
-        t2 = corr_listt[x][1][1] - corr_listt[x][0][2]  # v
-        # create a new img with the found transformation
-        t = get_base_kernel(x=t1, y=t2)
-        new = cv2.warpPerspective(im1, t, (im1.shape[1], im1.shape[0]))
-        # find the difference between new and im2 if smaller than diff update diff and spot
+    for x in range(len(list_t)):
+        t1, t2 = list_t[x][1][0] - list_t[x][0][1], list_t[x][1][1] - list_t[x][0][2]
+        new = cv2.warpPerspective(im1, get_base_kernel(x=t1, y=t2), (im1.shape[1], im1.shape[0]))
         d = ((im2 - new) ** 2).sum()
         if d < dif:
             dif = d
             spot = x
             if dif == 0:
                 break
-    # take the values from corrlist that has the smallest diff and return the transformation
-    t1 = corr_listt[spot][1][0] - corr_listt[spot][0][1]  # u
-    t2 = corr_listt[spot][1][1] - corr_listt[spot][0][2]  # v
-    t = get_base_kernel(x=t1, y=t2)
-    return t
+
+    t1, t2 = list_t[spot][1][0] - list_t[spot][0][1], list_t[spot][1][1] - list_t[spot][0][2]
+    return get_base_kernel(x=t1, y=t2)
 
 
 def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
@@ -289,12 +262,12 @@ def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
         I.append((im1.shape[0] // 5) * x)
         J.append((im1.shape[1] // 5) * x)
 
-    corr_listt = [(np.array([0]), 0, 0)]
+    list_t = [(np.array([0]), 0, 0)]
     for x in range(len(I)):
         for y in range(len(J)):
             # getting a template to match
-            windowa = im1[I[x] - pad:I[x] + pad + 1, J[y] - pad:J[y] + pad + 1]
-            a = windowa.reshape(1, win * win)
+            window_a = im1[I[x] - pad:I[x] + pad + 1, J[y] - pad:J[y] + pad + 1]
+            a = window_a.reshape(1, win * win)
             aT = a.T
             big = [(np.array([0]), 0, 0)]
             for i in range(0, im2.shape[0]):
@@ -316,23 +289,23 @@ def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
                             elif corr == big[0][0]:
                                 big.insert(0, (corr, i, j))
             # after checking this template check if the first value in big is bigger than the first value in corr_lisst
-            # if so clear corr_listt and copy the values from big to corr_listt and add the x y vaues of the original image
-            # if it equals copy the values from big to corr_listt and add the x y vaues of the original image
-            if big[0][0][0] > corr_listt[0][0][0]:
-                corr_listt.clear()
+            # if so clear list_t and copy the values from big to list_t and add the x y vaues of the original image
+            # if it equals copy the values from big to list_t and add the x y vaues of the original image
+            if big[0][0][0] > list_t[0][0][0]:
+                list_t.clear()
                 for m in range(len(big)):
-                    corr_listt.append((big[m], (I[x], J[y])))
-            if big[0][0][0] == corr_listt[0][0][0]:
+                    list_t.append((big[m], (I[x], J[y])))
+            if big[0][0][0] == list_t[0][0][0]:
                 for m in range(len(big)):
-                    corr_listt.append((big[m], (I[x], J[y])))
+                    list_t.append((big[m], (I[x], J[y])))
 
     spot = -1
     diff = float("inf")
     # go through all values in the cor_list and find the u v and theta
     # by finding the difference between im1 xy and im2 xy
-    for n in range(len(corr_listt)):
-        x = corr_listt[n][1][0] - corr_listt[n][0][1]
-        y = corr_listt[n][1][1] - corr_listt[n][0][2]
+    for n in range(len(list_t)):
+        x = list_t[n][1][0] - list_t[n][0][1]
+        y = list_t[n][1][1] - list_t[n][0][2]
 
         if y != 0:
             theta = np.arctan(x / y)
@@ -349,8 +322,8 @@ def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
         if diff == 0:
             break
     # take the values from corrlist that has the smallest diff and return the transformation
-    x = corr_listt[spot][1][0] - corr_listt[spot][0][1]
-    y = corr_listt[spot][1][1] - corr_listt[spot][0][2]
+    x = list_t[spot][1][0] - list_t[spot][0][1]
+    y = list_t[spot][1][1] - list_t[spot][0][2]
 
     theta = 0
     if y != 0:
