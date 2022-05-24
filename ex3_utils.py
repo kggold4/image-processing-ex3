@@ -8,7 +8,8 @@ MY_ID = 208980359
 MIN_MSE = 1000
 STEPS = 100
 FULL_DEGREES = 360
-WIN = 13
+WIN_13 = 13
+WIN_5 = 5
 BASE_KERNEL = np.array([[0, 0, 0], [-1, 0, 1], [0, 0, 0]])
 
 
@@ -29,6 +30,14 @@ def get_sigma(kernel_size, is_round: bool = False):
     if is_round:
         result = int(round(result))
     return result
+
+
+def get_list_t() -> list:
+    return [(np.array([0]), 0, 0)]
+
+
+def double_win(win):
+    return win * win
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +114,7 @@ def opticalFlowPyrLK(img1: np.ndarray, img2: np.ndarray, k: int, stepSize: int, 
     UVS = np.zeros((*img2.shape, 2))
     for i in range(k):
         p_d.append(np.array([img1.copy(), img2.copy()]))
+
         img1 = cv2.pyrDown(img1, dstsize=(img1.shape[1] // 2, img1.shape[0] // 2))
         img2 = cv2.pyrDown(img2, dstsize=(img2.shape[1] // 2, img2.shape[0] // 2))
         if img1.ndim < 2:
@@ -112,12 +122,12 @@ def opticalFlowPyrLK(img1: np.ndarray, img2: np.ndarray, k: int, stepSize: int, 
             break
     for level in range(k - 1, -1, -1):
         pyr_1, pyr_2 = p_d[level]
-        dx_median, dy_median = np.ma.median(np.ma.masked_where(UVS == np.zeros((2)), UVS), axis=(0, 1)).filled(0)
+        dx_median, dy_median = np.ma.median(np.ma.masked_where(UVS == np.zeros(2), UVS), axis=(0, 1)).filled(0)
         pyr_1 = cv2.warpPerspective(pyr_1, get_base_kernel(x=dx_median, y=dy_median), pyr_1.shape[::-1])
         PTs, uv = opticalFlow(pyr_1, pyr_2, max(int(stepSize * (2 ** -level)), 1), winSize)
         if PTs.size == 0:
             continue
-        converted_points = np.power(2, level) * PTs
+        converted_points = (2 ** level) * PTs
         UVS[converted_points[:, 1], converted_points[:, 0]] += uv * 2
 
     return UVS
@@ -136,11 +146,11 @@ def findTranslationLK(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
     """
     diff = np.inf
     spot = 0
-    old, new = opticalFlow(im1, im2, 10, 5)
+    _, im_new = opticalFlow(im1, im2, 10, 5)
 
     # look at all the u,v we found
-    for k in range(len(new)):
-        t1, t2 = new[k][0], new[k][1]
+    for k in range(len(im_new)):
+        t1, t2 = im_new[k][0], im_new[k][1]
         t = get_base_kernel(x=t1, y=t2)
 
         # create a new image
@@ -153,7 +163,7 @@ def findTranslationLK(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
             diff, spot = d, k
             if diff == 0:
                 break
-    t1, t2 = new[spot][0], new[spot][1]
+    t1, t2 = im_new[spot][0], im_new[spot][1]
     return get_base_kernel(x=t1, y=t2)
 
 
@@ -175,7 +185,7 @@ def findRigidLK(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
     rigid_mat = np.array([[np.cos(t), np.sin(t), 0], [-np.sin(t), np.cos(t), 0], [0, 0, 1]], dtype=np.float64)
     M = findTranslationLK(im1, cv2.warpPerspective(im2, rigid_mat, im2.shape[::-1]))
     ans = np.array(
-        [[np.cos(t), -np.sin(t), M[0, 2],], [np.sin(t), np.cos(t), M[1, 2]], [0, 0, 1]], dtype=np.float64)
+        [[np.cos(t), -np.sin(t), M[0, 2], ], [np.sin(t), np.cos(t), M[1, 2]], [0, 0, 1]], dtype=np.float64)
     return ans
 
 
@@ -185,47 +195,44 @@ def findTranslationCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
     :param im2: image 1 after Translation.
     :return: Translation matrix by correlation.
     """
-    win = WIN
-    pad = win // 2
-    im2pad = cv2.copyMakeBorder(im2, pad, pad, pad, pad, cv2.BORDER_REPLICATE, None, value=0)
-
-    # getting 4 x and y points to be the middle of the window
-    # the points are 1/5, 2/5 ... of the length and height
+    win = WIN_13
+    win_pad = win // 2
+    image_to_pad = cv2.copyMakeBorder(im2, win_pad, win_pad, win_pad, win_pad, cv2.BORDER_REPLICATE, None, value=0)
     I, J = [], []
     for x in range(1, 5):
         I.append(x * (im1.shape[0] // 5))
         J.append(x * (im1.shape[1] // 5))
 
-    list_t = [(np.array([0]), 0, 0)]
+    list_t = get_list_t()
     for x in range(len(I)):
         for y in range(len(J)):
-            window_a = im1[I[x] - pad:I[x] + pad + 1, J[y] - pad:J[y] + pad + 1]
-            a = window_a.reshape(1, win * win)
+            window_a = im1[I[x] - win_pad:I[x] + win_pad + 1, J[y] - win_pad:J[y] + win_pad + 1]
+            a = window_a.reshape(1, double_win(win))
             a_transpose = a.T
-            big = [(np.array([0]), 0, 0)]
-            # going through the other pic to match the template
+            big_list_t = get_list_t()
             for i in range(0, im2.shape[0]):
                 for j in range(0, im2.shape[1]):
-                    if (i + pad + win) < im2pad.shape[0] and (j + pad + win) < im2pad.shape[1]:
-                        windowb = im2pad[i + pad:i + pad + win, j + pad:j + pad + win]
-                        b = windowb.reshape(1, win * win)
+                    if (i + win_pad + win) < image_to_pad.shape[0] and (j + win_pad + win) < image_to_pad.shape[1]:
+                        window_b = image_to_pad[i + win_pad:i + win_pad + win, j + win_pad:j + win_pad + win]
+                        b = window_b.reshape(1, double_win(win))
                         b_transpose = b.T
                         top = np.dot(a, b_transpose)
                         bottom = np.dot(a, a_transpose) + np.dot(b, b_transpose)
                         if bottom != 0:
-                            corr = top / bottom
-                            if corr > big[0][0]:
-                                big.clear()
-                                big.insert(0, (corr, i, j))
-                            elif corr == big[0][0]:
-                                big.insert(0, (corr, i, j))
-            if big[0][0][0] > list_t[0][0][0]:
+                            cor = top / bottom
+                            if cor > big_list_t[0][0]:
+                                big_list_t.clear()
+                                big_list_t.insert(0, (cor, i, j))
+                            elif cor == big_list_t[0][0]:
+                                big_list_t.insert(0, (cor, i, j))
+            if big_list_t[0][0][0] > list_t[0][0][0]:
                 list_t.clear()
-                for k in range(len(big)):
-                    list_t.append((big[k], (I[x], J[y])))
-            if big[0][0][0] == list_t[0][0][0]:
-                for k in range(len(big)):
-                    list_t.append((big[k], (I[x], J[y])))
+                for k in range(len(big_list_t)):
+                    list_t.append((big_list_t[k], (I[x], J[y])))
+
+            if big_list_t[0][0][0] == list_t[0][0][0]:
+                for k in range(len(big_list_t)):
+                    list_t.append((big_list_t[k], (I[x], J[y])))
 
     dif = np.inf
     spot = -1
@@ -239,8 +246,7 @@ def findTranslationCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
             if dif == 0:
                 break
 
-    t1, t2 = list_t[spot][1][0] - list_t[spot][0][1], list_t[spot][1][1] - list_t[spot][0][2]
-    return get_base_kernel(x=t1, y=t2)
+    return get_base_kernel(x=list_t[spot][1][0] - list_t[spot][0][1], y=list_t[spot][1][1] - list_t[spot][0][2])
 
 
 def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
@@ -249,55 +255,47 @@ def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
     :param im2: image 1 after Rigid.
     :return: Rigid matrix by correlation.
     """
-    win = 5
+    win = WIN_5
     pad = win // 2
-
     im2pad = cv2.copyMakeBorder(im2, pad, pad, pad, pad, cv2.BORDER_REPLICATE, None, value=0)
-
-    # getting 4 x and y points to be the middle of the window
-    # the points are 1/5, 2/5 ... of the length and height
     I = []
     J = []
-    for x in range(1, 5):
-        I.append((im1.shape[0] // 5) * x)
-        J.append((im1.shape[1] // 5) * x)
+    for x in range(1, WIN_5):
+        I.append((im1.shape[0] // WIN_5) * x)
+        J.append((im1.shape[1] // WIN_5) * x)
 
-    list_t = [(np.array([0]), 0, 0)]
+    list_t = get_list_t()
     for x in range(len(I)):
         for y in range(len(J)):
             # getting a template to match
             window_a = im1[I[x] - pad:I[x] + pad + 1, J[y] - pad:J[y] + pad + 1]
-            a = window_a.reshape(1, win * win)
+            a = window_a.reshape(1, double_win(win))
             aT = a.T
-            big = [(np.array([0]), 0, 0)]
+            big_list_t = get_list_t()
             for i in range(0, im2.shape[0]):
                 for j in range(0, im2.shape[1]):
                     if (i + pad + win) < im2pad.shape[0] and (j + pad + win) < im2pad.shape[1]:
-                        windowb = im2pad[i + pad:i + pad + win, j + pad:j + pad + win]
-                        b = windowb.reshape(1, win * win)
+                        window_b = im2pad[i + pad:i + pad + win, j + pad:j + pad + win]
+                        b = window_b.reshape(1, double_win(win))
                         bT = b.T
                         top = np.dot(a, bT)
                         bottom = np.dot(a, aT) + np.dot(b, bT)
-                        # finding the correlation between the template and this window
-                        # if it is bigger than the first value in list big clear big and put it in with the x y values of im2
-                        # if it is equal to the first value add it to the list and put it in with the x y values of im2
+
                         if bottom != 0:
-                            corr = top / bottom
-                            if corr > big[0][0]:
-                                big.clear()
-                                big.insert(0, (corr, i, j))
-                            elif corr == big[0][0]:
-                                big.insert(0, (corr, i, j))
-            # after checking this template check if the first value in big is bigger than the first value in corr_lisst
-            # if so clear list_t and copy the values from big to list_t and add the x y vaues of the original image
-            # if it equals copy the values from big to list_t and add the x y vaues of the original image
-            if big[0][0][0] > list_t[0][0][0]:
+                            cor = top / bottom
+                            if cor > big_list_t[0][0]:
+                                big_list_t.clear()
+                                big_list_t.insert(0, (cor, i, j))
+                            elif cor == big_list_t[0][0]:
+                                big_list_t.insert(0, (cor, i, j))
+
+            if big_list_t[0][0][0] > list_t[0][0][0]:
                 list_t.clear()
-                for m in range(len(big)):
-                    list_t.append((big[m], (I[x], J[y])))
-            if big[0][0][0] == list_t[0][0][0]:
-                for m in range(len(big)):
-                    list_t.append((big[m], (I[x], J[y])))
+                for m in range(len(big_list_t)):
+                    list_t.append((big_list_t[m], (I[x], J[y])))
+            if big_list_t[0][0][0] == list_t[0][0][0]:
+                for m in range(len(big_list_t)):
+                    list_t.append((big_list_t[m], (I[x], J[y])))
 
     spot = -1
     diff = float("inf")
@@ -311,24 +309,20 @@ def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
             theta = np.arctan(x / y)
         else:
             theta = 0
-        # create a new img with the found transformation
         t = np.array([[np.cos(theta), -np.sin(theta), x], [np.sin(theta), np.cos(theta), y], [0, 0, 1]], dtype=np.float)
         new = cv2.warpPerspective(im1, t, im1.shape[::-1])
-        # find the difference between new and im2 if smaller than diff update diff and spot
         d = ((im2 - new) ** 2).sum()
         if d < diff:
             diff = d
             spot = n
         if diff == 0:
             break
-    # take the values from corrlist that has the smallest diff and return the transformation
     x = list_t[spot][1][0] - list_t[spot][0][1]
     y = list_t[spot][1][1] - list_t[spot][0][2]
 
     theta = 0
     if y != 0:
         theta += np.arctan(x / y)
-
 
     return np.array([[np.cos(theta), -np.sin(theta), x], [np.sin(theta), np.cos(theta), y], [0, 0, 1]], dtype=np.float)
 
@@ -385,9 +379,9 @@ def gaussianPyr(img: np.ndarray, levels: int = 4) -> List[np.ndarray]:
     :param levels: Pyramid depth
     :return: Gaussian pyramid (list of images)
     """
-    img = img[0: np.power(2, levels) * int(img.shape[0] / np.power(2, levels)),
-          0: np.power(2, levels) * int(img.shape[1] / np.power(2, levels))]
-
+    img_x_shape = img.shape[0]
+    img_y_shape = img.shape[1]
+    img = img[0: 2 ** levels * int(img_x_shape / 2 ** levels), 0: 2 ** levels * int(img_y_shape / 2 ** levels)]
     temp_img = img.copy()
     pyr = [temp_img]
     for i in range(levels - 1):
@@ -404,10 +398,10 @@ def blurImage2(in_image: np.ndarray, kernel_size: int) -> np.ndarray:
     :param kernel_size: Kernel size
     :return: The Blurred image
     """
-    sigma = get_sigma(kernel_size=kernel_size)
-    kernel = cv2.getGaussianKernel(kernel_size, sigma)
-    in_image = cv2.filter2D(in_image, -1, kernel, borderType=cv2.BORDER_REPLICATE)
-    in_image = cv2.filter2D(in_image, -1, np.transpose(kernel), borderType=cv2.BORDER_REPLICATE)
+    border = cv2.BORDER_REPLICATE
+    kernel = cv2.getGaussianKernel(kernel_size, get_sigma(kernel_size=kernel_size))
+    in_image = cv2.filter2D(in_image, -1, kernel, borderType=border)
+    in_image = cv2.filter2D(in_image, -1, np.transpose(kernel), borderType=border)
     return in_image
 
 
@@ -418,19 +412,17 @@ def laplaceianReduce(img: np.ndarray, levels: int = 4) -> List[np.ndarray]:
     :param levels: Pyramid depth
     :return: Laplacian Pyramid (list of images)
     """
-    pyr = []
-    g_ker = gaussian_Kernel(5)
-    g_ker *= 4
+    g_ker = get_gaussian_kernel(5) * 4
+    result_pyr = []
     gaussian_pyr = gaussianPyr(img, levels)
     for i in range(levels - 1):
-        extend_level = gaussExpand(gaussian_pyr[i + 1], g_ker)
-        lap_level = gaussian_pyr[i] - extend_level
-        pyr.append(lap_level.copy())
-    pyr.append(gaussian_pyr[-1])
-    return pyr
+        lap_level = gaussian_pyr[i] - gaussExpand(gaussian_pyr[i + 1], g_ker)
+        result_pyr.append(lap_level.copy())
+    result_pyr.append(gaussian_pyr[-1])
+    return result_pyr
 
 
-def gaussian_Kernel(kernel_size: int):
+def get_gaussian_kernel(kernel_size: int):
     sigma = get_sigma(kernel_size=kernel_size, is_round=True)
     g_kernel = cv2.getGaussianKernel(kernel_size, sigma)
     g_kernel = g_kernel * g_kernel.transpose()
@@ -444,10 +436,13 @@ def gaussExpand(img: np.ndarray, gs_k: np.ndarray) -> np.ndarray:
     :param gs_k: The kernel to use in expanding
     :return: The expanded level
     """
-    expand = np.zeros((img.shape[0] * 2, img.shape[1] * 2))
-    expand[::2, ::2] = img
-    expand = cv2.filter2D(expand, -1, gs_k, borderType=cv2.BORDER_REPLICATE)
-    return expand
+    img_x_shape = img.shape[0]
+    img_y_shape = img.shape[1]
+    gauss_expand = np.zeros((2 * img_x_shape, 2 * img_y_shape))
+    gauss_expand[::2, ::2] = img
+    border = cv2.BORDER_REPLICATE
+    gauss_expand = cv2.filter2D(gauss_expand, -1, gs_k, borderType=border)
+    return gauss_expand
 
 
 def laplaceianExpand(lap_pyr: List[np.ndarray]) -> np.ndarray:
@@ -456,16 +451,15 @@ def laplaceianExpand(lap_pyr: List[np.ndarray]) -> np.ndarray:
     :param lap_pyr: Laplacian Pyramid
     :return: Original image
     """
-    pyr_updated = lap_pyr.copy()
-    guss_k = gaussian_Kernel(5) * 4
-    cur_layer = lap_pyr[-1]
-    for i in range(len(pyr_updated) - 2, -1, -1):
-        cur_layer = gaussExpand(cur_layer, guss_k) + pyr_updated[i]
-    return cur_layer
+    pyr = lap_pyr.copy()
+    guss = get_gaussian_kernel(5) * 4
+    current_layer = lap_pyr[-1]
+    for i in range(len(pyr) - 2, -1, -1):
+        current_layer = pyr[i] + gaussExpand(current_layer, guss)
+    return current_layer
 
 
-def pyrBlend(img_1: np.ndarray, img_2: np.ndarray,
-             mask: np.ndarray, levels: int) -> (np.ndarray, np.ndarray):
+def pyrBlend(img_1: np.ndarray, img_2: np.ndarray, mask: np.ndarray, levels: int) -> (np.ndarray, np.ndarray):
     """
     Blends two images using PyramidBlend method
     :param img_1: Image 1
@@ -474,29 +468,28 @@ def pyrBlend(img_1: np.ndarray, img_2: np.ndarray,
     :param levels: Pyramid depth
     :return: (Naive blend, Blended Image)
     """
-    assert (img_1.shape == img_2.shape)
-
-    img_1 = img_1[0: np.power(2, levels) * int(img_1.shape[0] / np.power(2, levels)),
-            0: np.power(2, levels) * int(img_1.shape[1] / np.power(2, levels))]
-    img_2 = img_2[0: np.power(2, levels) * int(img_2.shape[0] / np.power(2, levels)),
-            0: np.power(2, levels) * int(img_2.shape[1] / np.power(2, levels))]
-    mask = mask[0: np.power(2, levels) * int(mask.shape[0] / np.power(2, levels)),
-           0: np.power(2, levels) * int(mask.shape[1] / np.power(2, levels))]
-
+    img_1_x_shape = img_1.shape[0]
+    img_1_y_shape = img_1.shape[1]
+    img_2_x_shape = img_2.shape[0]
+    img_2_y_shape = img_2.shape[1]
+    mask_x_shape = mask.shape[0]
+    mask_y_shape = mask.shape[1]
+    img_1 = img_1[0: 2 ** levels * int(img_1_x_shape / 2 ** levels), 0: 2 ** levels * int(img_1_y_shape / 2 ** levels)]
+    img_2 = img_2[0: 2 ** levels * int(img_2_x_shape / 2 ** levels), 0: 2 ** levels * int(img_2_y_shape / 2 ** levels)]
+    mask = mask[0: 2 ** levels * int(mask_x_shape / 2 ** levels), 0: 2 ** levels * int(mask_y_shape / 2 ** levels)]
     im_blend = np.zeros(img_1.shape)
-    if len(img_1.shape) == 3 or len(img_2.shape) == 3:  # the image is RGB
-        for color in range(3):
-            part_im1 = img_1[:, :, color]
-            part_im2 = img_2[:, :, color]
-            part_mask = mask[:, :, color]
-            im_blend[:, :, color] = pyrBlend_helper(part_im1, part_im2, part_mask, levels)
 
-    else:  # the image is grayscale
+    # rgb
+    if len(img_1.shape) == 3 or len(img_2.shape) == 3:
+        for color in range(3):
+            part_im1, part_im2 = img_1[:, :, color], img_2[:, :, color]
+            im_blend[:, :, color] = pyrBlend_helper(part_im1, part_im2, mask[:, :, color], levels)
+
+    # grayscale
+    else:
         im_blend = pyrBlend_helper(img_1, img_2, mask, levels)
 
-    # Naive blend
-    naive_blend = mask * img_1 + (1 - mask) * img_2
-
+    naive_blend = (img_2 * (1 - mask)) + (img_1 * mask)
     return naive_blend, im_blend
 
 
@@ -509,14 +502,11 @@ def pyrBlend_helper(img_1: np.ndarray, img_2: np.ndarray, mask: np.ndarray, leve
         :param levels: Pyramid depth
         :return:  Blended Image
         """
-    L1 = laplaceianReduce(img_1, levels)
-    L2 = laplaceianReduce(img_2, levels)
-    Gm = gaussianPyr(mask, levels)
+    l1 = laplaceianReduce(img_1, levels)
+    l2 = laplaceianReduce(img_2, levels)
+    g = gaussianPyr(mask, levels)
     Lout = []
-    for k in range(levels):
-        curr_lup = Gm[k] * L1[k] + (1 - Gm[k]) * L2[k]
-        Lout.append(curr_lup)
-    im_blend = laplaceianExpand(Lout)
-    im_blend = np.clip(im_blend, 0, 1)
-
+    for i in range(levels):
+        Lout.append((l1[i] * g[i]) + (l2[i] * (1 - g[i])))
+    im_blend = np.clip(laplaceianExpand(Lout), 0, 1)
     return im_blend
