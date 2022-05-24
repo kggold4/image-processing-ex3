@@ -484,17 +484,17 @@ def pyrBlend(img_1: np.ndarray, img_2: np.ndarray, mask: np.ndarray, levels: int
     if (len(img_1.shape) == 3) or (len(img_2.shape) == 3):
         for color in range(3):
             part_im1, part_im2 = img_1[:, :, color], img_2[:, :, color]
-            im_blend[:, :, color] = pyrBlend_helper(part_im1, part_im2, mask[:, :, color], levels)
+            im_blend[:, :, color] = pyr_blend_help(part_im1, part_im2, mask[:, :, color], levels)
 
     # grayscale
     else:
-        im_blend = pyrBlend_helper(img_1, img_2, mask, levels)
+        im_blend = pyr_blend_help(img_1, img_2, mask, levels)
 
     naive_blend = (img_2 * (1 - mask)) + (img_1 * mask)
     return naive_blend, im_blend
 
 
-def pyrBlend_helper(img_1: np.ndarray, img_2: np.ndarray, mask: np.ndarray, levels: int) -> np.ndarray:
+def pyr_blend_help(img_1: np.ndarray, img_2: np.ndarray, mask: np.ndarray, levels: int) -> np.ndarray:
     """
         Blends two images using PyramidBlend method
         :param img_1: Image 1
