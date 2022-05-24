@@ -267,7 +267,6 @@ def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
     list_t = get_list_t()
     for x in range(len(I)):
         for y in range(len(J)):
-            # getting a template to match
             window_a = im1[I[x] - pad:I[x] + pad + 1, J[y] - pad:J[y] + pad + 1]
             a = window_a.reshape(1, double_win(win))
             aT = a.T
@@ -275,7 +274,9 @@ def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
             for i in range(0, im2.shape[0]):
                 for j in range(0, im2.shape[1]):
                     if (i + pad + win) < im2pad.shape[0] and (j + pad + win) < im2pad.shape[1]:
+
                         window_b = im2pad[i + pad:i + pad + win, j + pad:j + pad + win]
+
                         b = window_b.reshape(1, double_win(win))
                         bT = b.T
                         top = np.dot(a, bT)
@@ -298,18 +299,16 @@ def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
                     list_t.append((big_list_t[m], (I[x], J[y])))
 
     spot = -1
-    diff = float("inf")
-    # go through all values in the cor_list and find the u v and theta
-    # by finding the difference between im1 xy and im2 xy
+    diff = np.inf
     for n in range(len(list_t)):
         x = list_t[n][1][0] - list_t[n][0][1]
         y = list_t[n][1][1] - list_t[n][0][2]
 
         if y != 0:
-            theta = np.arctan(x / y)
+            t = np.arctan(x / y)
         else:
-            theta = 0
-        t = np.array([[np.cos(theta), -np.sin(theta), x], [np.sin(theta), np.cos(theta), y], [0, 0, 1]], dtype=np.float)
+            t = 0
+        t = np.array([[np.cos(t), -np.sin(t), x], [np.sin(t), np.cos(t), y], [0, 0, 1]], dtype=np.float)
         new = cv2.warpPerspective(im1, t, im1.shape[::-1])
         d = ((im2 - new) ** 2).sum()
         if d < diff:
@@ -320,11 +319,11 @@ def findRigidCorr(im1: np.ndarray, im2: np.ndarray) -> np.ndarray:
     x = list_t[spot][1][0] - list_t[spot][0][1]
     y = list_t[spot][1][1] - list_t[spot][0][2]
 
-    theta = 0
+    t = 0
     if y != 0:
-        theta += np.arctan(x / y)
+        t += np.arctan(x / y)
 
-    return np.array([[np.cos(theta), -np.sin(theta), x], [np.sin(theta), np.cos(theta), y], [0, 0, 1]], dtype=np.float)
+    return np.array([[np.cos(t), -np.sin(t), x], [np.sin(t), np.cos(t), y], [0, 0, 1]], dtype=np.float)
 
 
 def warpImages(im1: np.ndarray, im2: np.ndarray, T: np.ndarray) -> np.ndarray:
@@ -336,35 +335,37 @@ def warpImages(im1: np.ndarray, im2: np.ndarray, T: np.ndarray) -> np.ndarray:
     :return: warp image 2 according to T and display both image1
     and the wrapped version of the image2 in the same figure.
     """
-    new = np.zeros((im1.shape[0], im1.shape[1]))
-    Tinv = np.linalg.inv(T)
-    print(T, "\n", Tinv)
+    result = np.zeros((im1.shape[0], im1.shape[1]))
+    t_inv = np.linalg.inv(T)
+    print(T, "\n", t_inv)
     for i in range(im2.shape[0]):
         for j in range(im2.shape[1]):
             arr = np.array([i, j, 1])
-            newarr = Tinv @ arr
-            x1 = np.floor(newarr[0]).astype(int)
-            x2 = np.ceil(newarr[0]).astype(int)
-            x3 = round(newarr[0] % 1, 3)
-            y1 = np.floor(newarr[1]).astype(int)
-            y2 = np.ceil(newarr[1]).astype(int)
-            y3 = round(newarr[1] % 1, 3)
+            t = t_inv.dot(arr)
 
-            if x1 >= 0 and y1 >= 0 and x1 < im1.shape[0] and y1 < im1.shape[1]:
-                new[i][j] += (1 - x3) * (1 - y3) * im1[x1][y1]
+            x1 = np.floor(t[0]).astype(int)
+            x2 = np.ceil(t[0]).astype(int)
+            x3 = np.round(t[0] % 1, 3)
 
-            if x2 >= 0 and y1 >= 0 and x2 < im1.shape[0] and y1 < im1.shape[1]:
-                new[i][j] += x3 * (1 - y3) * im1[x2][y1]
+            y1 = np.floor(t[1]).astype(int)
+            y2 = np.ceil(t[1]).astype(int)
+            y3 = np.round(t[1] % 1, 3)
 
-            if x1 >= 0 and y2 >= 0 and x1 < im1.shape[0] and y2 < im1.shape[1]:
-                new[i][j] += (1 - x3) * y3 * im1[x1][y2]
+            if 0 <= x1 < im1.shape[0] and 0 <= y1 < im1.shape[1]:
+                result[i][j] += im1[x1][y1] * (1 - x3) * (1 - y3)
 
-            if x2 >= 0 and y2 >= 0 and x2 < im1.shape[0] and y2 < im1.shape[1]:
-                new[i][j] += x3 * y3 * im1[x2][y2]
+            if 0 <= x2 < im1.shape[0] and 0 <= y1 < im1.shape[1]:
+                result[i][j] += im1[x2][y1] * x3 * (1 - y3)
 
-    plt.imshow(new)
+            if 0 <= x1 < im1.shape[0] and 0 <= y2 < im1.shape[1]:
+                result[i][j] += im1[x1][y2] * (1 - x3) * y3
+
+            if 0 <= x2 < im1.shape[0] and 0 <= y2 < im1.shape[1]:
+                result[i][j] += im1[x2][y2] * x3 * y3
+
+    plt.imshow(result)
     plt.show()
-    return new
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +481,7 @@ def pyrBlend(img_1: np.ndarray, img_2: np.ndarray, mask: np.ndarray, levels: int
     im_blend = np.zeros(img_1.shape)
 
     # rgb
-    if len(img_1.shape) == 3 or len(img_2.shape) == 3:
+    if (len(img_1.shape) == 3) or (len(img_2.shape) == 3):
         for color in range(3):
             part_im1, part_im2 = img_1[:, :, color], img_2[:, :, color]
             im_blend[:, :, color] = pyrBlend_helper(part_im1, part_im2, mask[:, :, color], levels)
